@@ -1330,25 +1330,41 @@ async function doLogin() {
   if(r.error){ errEl.textContent=r.error; errEl.classList.add('show'); return; }
   errEl.classList.remove('show'); localStorage.setItem('ma_user', name);
 
-  // ★ 완벽 격리: 로그인한 사람만의 "독립된 프로필 가방" 생성/불러오기
+  // ★ 수정됨: 백엔드의 Magic Sync API를 호출하여 내 모든 회사 목록 자동 복구 및 동기화
   try {
     let profiles = JSON.parse(localStorage.getItem('ma_profiles') || '[]');
-    let existingProf = profiles.find(p => p.accounts.some(a => a.companyId === S.companyId && a.userName === name));
-    
-    if (existingProf) {
-      // 내 가방이 이미 있으면 비번 최신화 후 장착
-      const acc = existingProf.accounts.find(a => a.companyId === S.companyId && a.userName === name);
-      if(acc) acc.pw = pw;
-      localStorage.setItem('ma_current_prof_id', existingProf.id);
-    } else {
-      // 처음 로그인하면 나만의 새 가방 발급
-      const newProfId = 'prof_' + Date.now() + Math.floor(Math.random()*1000);
-      const cName = localStorage.getItem('ma_company_name') || '현재 회사';
-      profiles.push({ id: newProfId, accounts: [{ companyId: S.companyId, companyName: cName, userName: name, pw: pw }] });
-      localStorage.setItem('ma_current_prof_id', newProfId);
+    // 이름 기준으로 내 프로필 찾기 (없으면 새로 생성)
+    let myProf = profiles.find(p => p.accounts.some(a => a.userName === name));
+    if (!myProf) {
+      myProf = { id: 'prof_' + Date.now(), accounts: [] };
+      profiles.push(myProf);
     }
+
+    // 서버에 '내 이름+비번'으로 가입된 모든 회사 내역 요청 (/api/sync-groups 활용)
+    const syncData = await api('POST', '/sync-groups', { name: name, pw: pw });
+    if (syncData && Array.isArray(syncData)) {
+      syncData.forEach(serverAcc => {
+        const existingIdx = myProf.accounts.findIndex(a => a.companyId === serverAcc.company_id);
+        if (existingIdx >= 0) {
+          myProf.accounts[existingIdx].companyName = serverAcc.company_name;
+          myProf.accounts[existingIdx].pw = serverAcc.pw;
+        } else {
+          // 로컬에 없는 회사는 서버 데이터를 바탕으로 자동 추가
+          myProf.accounts.push({
+            companyId: serverAcc.company_id,
+            companyName: serverAcc.company_name,
+            userName: serverAcc.user_name,
+            pw: serverAcc.pw
+          });
+        }
+      });
+    }
+
+    localStorage.setItem('ma_current_prof_id', myProf.id);
     localStorage.setItem('ma_profiles', JSON.stringify(profiles));
-  } catch(e) {}
+  } catch(e) { 
+    console.error('동기화 실패:', e); 
+  }
 
   enterApp(name);
 }
